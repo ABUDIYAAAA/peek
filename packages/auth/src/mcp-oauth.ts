@@ -459,28 +459,31 @@ export async function exchangeAuthorizationCode(
   const codeHash = await sha256Hex(params.code);
   const now = new Date();
 
-  const authCode = await db.query.oauthAuthCodes.findFirst({
-    where: eq(oauthAuthCodes.codeHash, codeHash),
-  });
+  // Atomically claim the authorization code in a single statement.
+  // Concurrency guard: prevents race conditions where the same code is exchanged concurrently.
+  const codeWhere = [
+    eq(oauthAuthCodes.codeHash, codeHash),
+    isNull(oauthAuthCodes.usedAt),
+    gt(oauthAuthCodes.expiresAt, now),
+  ];
+  if (params.clientId) {
+    codeWhere.push(eq(oauthAuthCodes.clientId, params.clientId));
+  }
+
+  const [authCode] = await db
+    .update(oauthAuthCodes)
+    .set({ usedAt: now })
+    .where(and(...codeWhere))
+    .returning();
 
   if (!authCode) {
-    throw new UnauthorizedError("Invalid authorization code");
-  }
-
-  if (authCode.usedAt) {
-    throw new UnauthorizedError("Authorization code has already been used");
-  }
-
-  if (authCode.expiresAt <= now) {
-    throw new UnauthorizedError("Authorization code has expired");
+    throw new UnauthorizedError(
+      "Invalid, expired, or already used authorization code",
+    );
   }
 
   if (authCode.redirectUri !== params.redirectUri) {
     throw new BadRequestError("redirect_uri mismatch");
-  }
-
-  if (params.clientId && authCode.clientId !== params.clientId) {
-    throw new BadRequestError("client_id mismatch");
   }
 
   // Verify PKCE S256
@@ -496,12 +499,6 @@ export async function exchangeAuthorizationCode(
   if (!identity || identity.revokedAt) {
     throw new UnauthorizedError("Machine identity has been revoked");
   }
-
-  // Mark code used immediately
-  await db
-    .update(oauthAuthCodes)
-    .set({ usedAt: now })
-    .where(eq(oauthAuthCodes.codeHash, codeHash));
 
   const scopes = JSON.parse(authCode.scopes) as McpScope[];
 
@@ -532,20 +529,25 @@ export async function refreshMachineAccessToken(
   );
   const now = new Date();
 
-  const existingToken = await db.query.machineTokens.findFirst({
-    where: and(
-      eq(machineTokens.refreshTokenHash, tokenHash),
-      isNull(machineTokens.revokedAt),
-      gt(machineTokens.refreshTokenExpiresAt, now),
-    ),
-  });
+  // Atomically claim and revoke the refresh token in a single statement.
+  // Concurrency guard: prevents race conditions where the same refresh token is exchanged concurrently.
+  const tokenWhere = [
+    eq(machineTokens.refreshTokenHash, tokenHash),
+    isNull(machineTokens.revokedAt),
+    gt(machineTokens.refreshTokenExpiresAt, now),
+  ];
+  if (params.clientId) {
+    tokenWhere.push(eq(machineTokens.clientId, params.clientId));
+  }
+
+  const [existingToken] = await db
+    .update(machineTokens)
+    .set({ revokedAt: now })
+    .where(and(...tokenWhere))
+    .returning();
 
   if (!existingToken) {
     throw new UnauthorizedError("Invalid or expired machine refresh token");
-  }
-
-  if (params.clientId && existingToken.clientId !== params.clientId) {
-    throw new UnauthorizedError("client_id mismatch");
   }
 
   const identity = await db.query.machineIdentities.findFirst({
@@ -555,12 +557,6 @@ export async function refreshMachineAccessToken(
   if (!identity || identity.revokedAt) {
     throw new UnauthorizedError("Machine identity has been revoked");
   }
-
-  // Rotate: revoke old token pair and issue new pair
-  await db
-    .update(machineTokens)
-    .set({ revokedAt: now })
-    .where(eq(machineTokens.id, existingToken.id));
 
   const scopes = JSON.parse(existingToken.scopes) as McpScope[];
 

@@ -156,24 +156,23 @@ export async function validateAndRotateSession(
   const tokenHash = await hashRefreshToken(rawRefreshToken, secret);
   const now = new Date();
 
-  // Find valid non-revoked session
-  const session = await db.query.sessions.findFirst({
-    where: and(
-      eq(sessions.tokenHash, tokenHash),
-      isNull(sessions.revokedAt),
-      gt(sessions.expiresAt, now),
-    ),
-  });
+  // Atomically claim and revoke the existing session in a single statement.
+  // Concurrency guard: only the single thread that transitions revokedAt from NULL succeeds.
+  const [session] = await db
+    .update(sessions)
+    .set({ revokedAt: now })
+    .where(
+      and(
+        eq(sessions.tokenHash, tokenHash),
+        isNull(sessions.revokedAt),
+        gt(sessions.expiresAt, now),
+      ),
+    )
+    .returning();
 
   if (!session) {
     throw new UnauthorizedError("Invalid or expired refresh token");
   }
-
-  // Mark old session as revoked
-  await db
-    .update(sessions)
-    .set({ revokedAt: now })
-    .where(eq(sessions.id, session.id));
 
   // Find associated user
   const user = await db.query.users.findFirst({
