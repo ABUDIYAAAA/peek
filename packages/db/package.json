@@ -1,0 +1,29 @@
+{
+  "name": "@peek/db",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./schema": "./src/schema/index.ts",
+    "./client": "./src/client.ts"
+  },
+  "scripts": {
+    "check-types": "tsc --noEmit",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate:local": "wrangler d1 migrations apply peek --local --config=../../apps/api/wrangler.jsonc",
+    "db:migrate:prod": "wrangler d1 migrations apply peek --remote --config=../../apps/api/wrangler.jsonc",
+    "db:up": "drizzle-kit up"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.4"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261113.1",
+    "@peek/typescript-config": "workspace:*",
+    "drizzle-kit": "^0.31.11",
+    "typescript": "7.0.2"
+  }
+}

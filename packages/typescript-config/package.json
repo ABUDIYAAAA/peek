@@ -1,9 +1,21 @@
 {
-  "name": "@repo/typescript-config",
+  "name": "@peek/typescript-config",
   "version": "0.0.0",
   "private": true,
   "license": "MIT",
   "publishConfig": {
     "access": "public"
+  },
+  "files": [
+    "base.json",
+    "worker.json",
+    "nextjs.json",
+    "react-library.json"
+  ],
+  "exports": {
+    "./base.json": "./base.json",
+    "./worker.json": "./worker.json",
+    "./nextjs.json": "./nextjs.json",
+    "./react-library.json": "./react-library.json"
   }
 }

@@ -1,0 +1,30 @@
+{
+  "name": "@peek/api",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --env-file ../../.env",
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "deploy": "wrangler deploy",
+    "check-types": "tsc --noEmit",
+    "cf-typegen": "wrangler types"
+  },
+  "dependencies": {
+    "@hono/zod-validator": "^0.9.1",
+    "@modelcontextprotocol/hono": "^2.0.2",
+    "@modelcontextprotocol/server": "^2.4.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@peek/auth": "workspace:*",
+    "@peek/core": "workspace:*",
+    "@peek/db": "workspace:*",
+    "hono": "^4.13.18",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261113.1",
+    "@peek/typescript-config": "workspace:*",
+    "typescript": "7.0.2",
+    "wrangler": "^4.161.0"
+  }
+}
