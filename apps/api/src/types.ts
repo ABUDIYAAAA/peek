@@ -25,6 +25,10 @@ export interface Env {
   COOKIE_SAME_SITE?: string;
   ACCESS_TOKEN_EXPIRY?: string;
   REFRESH_TOKEN_EXPIRY?: string;
+  ENCRYPTION_SECRET?: string;
+  MCP_TOKEN_SECRET?: string;
+  MCP_ACCESS_TOKEN_EXPIRY?: string;
+  MCP_REFRESH_TOKEN_EXPIRY?: string;
   [key: string]: unknown;
 }
 

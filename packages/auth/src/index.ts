@@ -6,3 +6,7 @@ export * from "./session.js";
 export * from "./cookies.js";
 export * from "./middleware.js";
 export * from "./service.js";
+export * from "./mcp-scopes.js";
+export * from "./mcp-oauth.js";
+export * from "./machine-identity.js";
+export * from "./machine-audit.js";

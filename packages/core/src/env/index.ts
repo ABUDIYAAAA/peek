@@ -43,6 +43,14 @@ export const baseEnvSchema = z.object({
   COOKIE_SAME_SITE: z.enum(["lax", "strict", "none"]).default("lax"),
   ACCESS_TOKEN_EXPIRY: z.string().default("15m"),
   REFRESH_TOKEN_EXPIRY: z.string().default("30d"),
+
+  // Machine Identity / MCP OAuth 2.1 Token Secrets & Expiry
+  MCP_TOKEN_SECRET: z
+    .string()
+    .min(16)
+    .default("peek_mcp_token_secret_development_34567"),
+  MCP_ACCESS_TOKEN_EXPIRY: z.string().default("1h"),
+  MCP_REFRESH_TOKEN_EXPIRY: z.string().default("90d"),
 });
 
 export type BaseEnv = z.infer<typeof baseEnvSchema>;

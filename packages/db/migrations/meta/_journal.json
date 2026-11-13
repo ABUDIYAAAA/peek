@@ -15,6 +15,13 @@
       "when": 1794581829364,
       "tag": "0001_same_sasquatch",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1794584040363,
+      "tag": "0002_dry_nightcrawler",
+      "breakpoints": true
     }
   ]
 }

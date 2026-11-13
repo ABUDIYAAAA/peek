@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { oauthMetadataResponse } from "@modelcontextprotocol/server";
 import type { AppEnv } from "./types.js";
 import { requestIdMiddleware } from "./middleware/requestId.js";
 import { envMiddleware } from "./middleware/env.js";
@@ -9,7 +10,9 @@ import { errorHandler } from "./middleware/errorHandler.js";
 import { notFoundHandler } from "./middleware/notFoundHandler.js";
 import { healthRouter } from "./routes/health.js";
 import { authRouter } from "./routes/auth.js";
-import { createMcpRouter } from "./mcp/index.js";
+import { oauthRouter } from "./routes/oauth.js";
+import { machineIdentitiesRouter } from "./routes/machine-identities.js";
+import { createMcpRouter, buildOAuthMetadataOptions } from "./mcp/index.js";
 import { respondSuccess } from "./helpers/respond.js";
 
 const app = new Hono<AppEnv>();
@@ -24,15 +27,33 @@ app.use(
   cors({
     origin: (origin) => origin || "*",
     credentials: true,
-    allowHeaders: ["Content-Type", "Authorization", "X-Request-Id"],
+    allowHeaders: [
+      "Content-Type",
+      "Authorization",
+      "X-Request-Id",
+      "MCP-Protocol-Version",
+    ],
     allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    exposeHeaders: ["X-Request-Id"],
+    exposeHeaders: ["X-Request-Id", "WWW-Authenticate"],
   }),
 );
 
 // Global Error and Not Found Handlers
 app.onError(errorHandler);
 app.notFound(notFoundHandler);
+
+// OAuth 2.1 Discovery Endpoints (RFC 9728 Protected Resource + RFC 8414 AS Metadata)
+app.all("/.well-known/*", async (c, next) => {
+  const env = c.get("env");
+  const metadataRes = oauthMetadataResponse(
+    c.req.raw,
+    buildOAuthMetadataOptions(env),
+  );
+  if (metadataRes) {
+    return metadataRes;
+  }
+  await next();
+});
 
 // Root Index
 app.get("/", (c) => {
@@ -44,7 +65,13 @@ app.get("/", (c) => {
     endpoints: {
       health: "/health",
       mcp: "/mcp",
+      oauthProtectedResourceMetadata:
+        "/.well-known/oauth-protected-resource/mcp",
+      oauthAuthorizationServerMetadata:
+        "/.well-known/oauth-authorization-server",
       auth: "/api/v1/auth",
+      oauth: "/api/v1/oauth",
+      machineIdentities: "/api/v1/machine-identities",
       api: "/api/v1",
     },
   });
@@ -58,6 +85,8 @@ app.route("/mcp", createMcpRouter());
 const v1Router = new Hono<AppEnv>();
 v1Router.get("/", (c) => respondSuccess(c, { message: "Peek API v1 ready" }));
 v1Router.route("/auth", authRouter);
+v1Router.route("/oauth", oauthRouter);
+v1Router.route("/machine-identities", machineIdentitiesRouter);
 
 app.route("/api/v1", v1Router);
 
