@@ -9,20 +9,15 @@ import {
 } from "@peek/db";
 import { machineAuditLogs, machineIdentities } from "@peek/db";
 import { BadRequestError, NotFoundError } from "@peek/core";
+import {
+  defaultCompensationDispatcher,
+  type DomainCompensationDispatcher,
+  type ReverseActionDescriptor,
+  type ReverseActionStrategy,
+  type CompensationResult,
+} from "./domain-compensation.js";
 
-export type ReverseActionStrategy =
-  | "delete_created"
-  | "restore_before_state"
-  | "reinsert_deleted"
-  | "custom"
-  | "none";
-
-export interface ReverseActionDescriptor {
-  strategy: ReverseActionStrategy;
-  table?: string;
-  targetId?: string;
-  compensatingData?: Record<string, unknown>;
-}
+export * from "./domain-compensation.js";
 
 export interface RecordAuditLogInput {
   machineIdentityId: string;
@@ -160,14 +155,15 @@ export interface RevertExecutionResult {
 
 /**
  * Reverts a single reversible Machine Identity audit log action.
- * Validates ownership, reversibility, and executes the compensating action.
+ * Validates ownership, reversibility, and executes real compensating domain mutations.
+ * If domain compensation fails, the audit log status is NOT changed.
  */
 export async function revertSingleAuditLog(
   db: Database,
   userId: string,
   auditLogId: string,
   reason?: string,
-  customExecutor?: CustomRevertExecutor,
+  dispatcherOrExecutor?: DomainCompensationDispatcher | CustomRevertExecutor,
 ): Promise<RevertExecutionResult> {
   const log = await db.query.machineAuditLogs.findFirst({
     where: and(
@@ -205,8 +201,27 @@ export async function revertSingleAuditLog(
     }
   }
 
-  if (customExecutor) {
-    await customExecutor(db, log, reverseAction);
+  if (reverseAction.strategy === "none") {
+    throw new BadRequestError(
+      `Audit log "${log.toolName}" has no reversible strategy configured`,
+    );
+  }
+
+  // Execute real domain compensation before updating audit log status
+  let compResult: CompensationResult;
+  if (typeof dispatcherOrExecutor === "function") {
+    await dispatcherOrExecutor(db, log, reverseAction);
+    compResult = {
+      strategyApplied: reverseAction.strategy,
+      note: `Reverted via custom executor (${reverseAction.strategy})`,
+    };
+  } else {
+    const dispatcher = dispatcherOrExecutor ?? defaultCompensationDispatcher;
+    compResult = await dispatcher.execute(db, {
+      userId,
+      auditLog: log,
+      reverseAction,
+    });
   }
 
   const now = new Date();
@@ -226,15 +241,6 @@ export async function revertSingleAuditLog(
     )
     .returning();
 
-  const note =
-    reverseAction.strategy === "delete_created"
-      ? `Deleted created ${log.resourceType ?? "resource"} (${reverseAction.targetId ?? log.resourceId ?? "unknown"})`
-      : reverseAction.strategy === "restore_before_state"
-        ? `Restored prior state for ${log.resourceType ?? "resource"} (${reverseAction.targetId ?? log.resourceId ?? "unknown"})`
-        : reverseAction.strategy === "reinsert_deleted"
-          ? `Re-inserted deleted ${log.resourceType ?? "resource"} (${reverseAction.targetId ?? log.resourceId ?? "unknown"})`
-          : `Marked action reverted using ${reverseAction.strategy} strategy`;
-
   return {
     auditLog: updated ?? {
       ...log,
@@ -243,8 +249,8 @@ export async function revertSingleAuditLog(
       revertedByUserId: userId,
       revertReason: reason?.trim() || "Reverted by user",
     },
-    strategyApplied: reverseAction.strategy,
-    note,
+    strategyApplied: compResult.strategyApplied,
+    note: compResult.note,
   };
 }
 
@@ -263,7 +269,7 @@ export async function revertAllForMachineIdentity(
   userId: string,
   machineIdentityId: string,
   reason?: string,
-  customExecutor?: CustomRevertExecutor,
+  dispatcherOrExecutor?: DomainCompensationDispatcher | CustomRevertExecutor,
 ): Promise<BatchRevertResult> {
   const identity = await db.query.machineIdentities.findFirst({
     where: and(
@@ -291,14 +297,18 @@ export async function revertAllForMachineIdentity(
 
   const results: RevertExecutionResult[] = [];
   for (const log of logsToRevert) {
-    const res = await revertSingleAuditLog(
-      db,
-      userId,
-      log.id,
-      reason ?? `Batch revert for Machine Identity ${identity.name}`,
-      customExecutor,
-    );
-    results.push(res);
+    try {
+      const res = await revertSingleAuditLog(
+        db,
+        userId,
+        log.id,
+        reason ?? `Batch revert for Machine Identity ${identity.name}`,
+        dispatcherOrExecutor,
+      );
+      results.push(res);
+    } catch {
+      // Continue best-effort for remaining actions if a single action fails
+    }
   }
 
   return {

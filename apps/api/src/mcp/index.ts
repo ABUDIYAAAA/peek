@@ -15,6 +15,8 @@ import {
   type Database,
   type McpScope,
   type AuditActionType,
+  journalDrafts,
+  engineeringProgress,
 } from "@peek/db";
 import {
   verifyMcpBearerToken,
@@ -298,6 +300,130 @@ export function buildMcpServer(ctx: BuildMcpServerOptions) {
               null,
               2,
             ),
+          },
+        ],
+      };
+    },
+  );
+
+  // Create journal draft (journals:write) - fully audited and reversible
+  registerAuditedTool(
+    server,
+    ctx,
+    {
+      name: "create_journal_draft",
+      description:
+        "Create an engineering journal draft entry in your PEEK workspace",
+      inputSchema: {
+        title: z.string().describe("Title of the journal entry"),
+        content: z.string().describe("Markdown content of the journal draft"),
+        tags: z
+          .array(z.string())
+          .optional()
+          .describe("Optional tags to organize the entry"),
+      },
+      actionType: "create",
+      requiredScope: "journals:write",
+    },
+    async (args) => {
+      const draftId = crypto.randomUUID();
+      const now = new Date();
+      const tagsJson = args.tags ? JSON.stringify(args.tags) : null;
+
+      const [draft] = await ctx.db
+        .insert(journalDrafts)
+        .values({
+          id: draftId,
+          userId: ctx.session.user.id,
+          machineIdentityId: ctx.session.machineIdentity.id,
+          title: args.title,
+          content: args.content,
+          tags: tagsJson,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning();
+
+      if (!draft) {
+        throw new Error("Failed to create journal draft");
+      }
+
+      return {
+        resourceType: "journal_drafts",
+        resourceId: draft.id,
+        afterState: draft,
+        reverseAction: {
+          strategy: "delete_created",
+          table: "journal_drafts",
+          targetId: draft.id,
+        },
+        isReversible: true,
+        content: [
+          {
+            type: "text",
+            text: `Created journal draft "${draft.title}" with ID ${draft.id}`,
+          },
+        ],
+      };
+    },
+  );
+
+  // Submit engineering progress (progress:write) - fully audited and reversible
+  registerAuditedTool(
+    server,
+    ctx,
+    {
+      name: "submit_engineering_progress",
+      description: "Log an engineering progress update in your PEEK workspace",
+      inputSchema: {
+        summary: z.string().describe("Summary of progress made"),
+        details: z.string().optional().describe("Additional technical details"),
+        blockers: z.string().optional().describe("Any blockers or impediments"),
+        status: z
+          .enum(["in_progress", "completed", "blocked"])
+          .default("in_progress")
+          .describe("Current progress status"),
+      },
+      actionType: "create",
+      requiredScope: "progress:write",
+    },
+    async (args) => {
+      const progressId = crypto.randomUUID();
+      const now = new Date();
+
+      const [progress] = await ctx.db
+        .insert(engineeringProgress)
+        .values({
+          id: progressId,
+          userId: ctx.session.user.id,
+          machineIdentityId: ctx.session.machineIdentity.id,
+          summary: args.summary,
+          details: args.details ?? null,
+          blockers: args.blockers ?? null,
+          status: args.status,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning();
+
+      if (!progress) {
+        throw new Error("Failed to log engineering progress");
+      }
+
+      return {
+        resourceType: "engineering_progress",
+        resourceId: progress.id,
+        afterState: progress,
+        reverseAction: {
+          strategy: "delete_created",
+          table: "engineering_progress",
+          targetId: progress.id,
+        },
+        isReversible: true,
+        content: [
+          {
+            type: "text",
+            text: `Logged engineering progress update with ID ${progress.id}: "${progress.summary}"`,
           },
         ],
       };

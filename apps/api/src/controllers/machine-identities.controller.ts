@@ -7,6 +7,7 @@ import {
   listAuditLogs,
   revertSingleAuditLog,
   revertAllForMachineIdentity,
+  defaultCompensationDispatcher,
 } from "@peek/auth";
 import type { AuditActionType, AuditStatus } from "@peek/db";
 import { UnauthorizedError } from "@peek/core";
@@ -159,7 +160,13 @@ export async function revertSingleActionController(
     .json<{ reason?: string }>()
     .catch(() => ({ reason: undefined }));
 
-  const result = await revertSingleAuditLog(db, user.sub, logId, body.reason);
+  const result = await revertSingleAuditLog(
+    db,
+    user.sub,
+    logId,
+    body.reason,
+    defaultCompensationDispatcher,
+  );
 
   logger?.warn("Reverted Machine Identity audit action", {
     userId: user.sub,
@@ -191,6 +198,7 @@ export async function revertAllIdentityActionsController(
     user.sub,
     machineIdentityId,
     body.reason,
+    defaultCompensationDispatcher,
   );
 
   logger?.warn("Batch-reverted Machine Identity actions", {

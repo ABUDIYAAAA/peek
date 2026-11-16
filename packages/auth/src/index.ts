@@ -9,4 +9,5 @@ export * from "./service.js";
 export * from "./mcp-scopes.js";
 export * from "./mcp-oauth.js";
 export * from "./machine-identity.js";
+export * from "./domain-compensation.js";
 export * from "./machine-audit.js";
