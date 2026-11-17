@@ -9,12 +9,12 @@
     ".": "./src/index.ts"
   },
   "scripts": {
+    "test": "node --no-deprecation --import ../../scripts/test-register.mjs --test test/**/*.test.ts",
     "check-types": "tsc --noEmit"
   },
   "dependencies": {
     "@peek/core": "workspace:*",
-    "@peek/db": "workspace:*",
-    "hono": "^4.13.18"
+    "@peek/db": "workspace:*"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261113.1",

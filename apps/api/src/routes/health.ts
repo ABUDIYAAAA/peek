@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { sql } from "@peek/db";
 import { tryCatch } from "@peek/core";
+import { pruneExpiredAuthRecords } from "@peek/auth";
 import type { AppEnv } from "../types.js";
 import { respondSuccess, respondError } from "../helpers/respond.js";
 
@@ -25,4 +26,13 @@ healthRouter.get("/", async (c) => {
     database: dbStatus,
     timestamp: new Date().toISOString(),
   });
+});
+
+healthRouter.post("/prune-expired", async (c) => {
+  const db = c.get("db");
+  if (!db) {
+    return respondError(c, "Database unavailable", { status: 500 });
+  }
+  const result = await pruneExpiredAuthRecords(db);
+  return respondSuccess(c, result);
 });

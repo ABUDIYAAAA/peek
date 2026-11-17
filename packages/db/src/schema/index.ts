@@ -8,3 +8,4 @@ export * from "./oauth-tokens.js";
 export * from "./machine-audit-logs.js";
 export * from "./journal-drafts.js";
 export * from "./engineering-progress.js";
+export * from "./relations.js";

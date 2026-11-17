@@ -1,18 +1,16 @@
 import { createMiddleware } from "hono/factory";
 import { UnauthorizedError, ForbiddenError } from "@peek/core";
-import type { UserRole, JwtPayload } from "./types.js";
-import { verifyAccessToken } from "./jwt.js";
-import { getCookie, getCookieConfig } from "./cookies.js";
+import { verifyAccessToken, getCookie, getCookieConfig } from "@peek/auth";
+import type { UserRole } from "@peek/auth";
+import type { AppEnv } from "../types.js";
 
+/**
+ * Hono middleware requiring a valid HTTP-only access cookie.
+ * Verifies JWT payload and sets `c.set("user", payload)`.
+ */
 export const requireAuth = () =>
-  createMiddleware<{
-    Bindings: Record<string, unknown>;
-    Variables: {
-      user?: JwtPayload;
-      env?: any;
-    };
-  }>(async (c, next) => {
-    const env = c.get("env") || c.env;
+  createMiddleware<AppEnv>(async (c, next) => {
+    const env = c.get("env") || (c.env as any);
     const accessSecret = env?.JWT_ACCESS_SECRET;
 
     if (!accessSecret) {
@@ -36,13 +34,11 @@ export const requireAuth = () =>
     await next();
   });
 
+/**
+ * Hono middleware enforcing role-based access control.
+ */
 export const requireRole = (allowedRoles: UserRole[]) =>
-  createMiddleware<{
-    Bindings: Record<string, unknown>;
-    Variables: {
-      user?: JwtPayload;
-    };
-  }>(async (c, next) => {
+  createMiddleware<AppEnv>(async (c, next) => {
     const user = c.get("user");
     if (!user) {
       throw new UnauthorizedError("Authentication required");
@@ -50,7 +46,7 @@ export const requireRole = (allowedRoles: UserRole[]) =>
 
     if (!allowedRoles.includes(user.role)) {
       throw new ForbiddenError(
-        `Access denied. Requires one of roles: [${allowedRoles.join(", ")}] (current: ${user.role})`,
+        "Insufficient permissions to access this resource",
       );
     }
 

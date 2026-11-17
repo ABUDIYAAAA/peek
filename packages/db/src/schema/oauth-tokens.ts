@@ -15,8 +15,8 @@ export const oauthAuthCodes = sqliteTable("oauth_auth_codes", {
     .notNull()
     .references(() => users.id, { onDelete: "cascade" }),
   machineIdentityId: text("machine_identity_id")
-    .notNull()
     .references(() => machineIdentities.id, { onDelete: "cascade" }),
+  identityName: text("identity_name"),
   redirectUri: text("redirect_uri").notNull(),
   scopes: text("scopes").notNull(),
   codeChallenge: text("code_challenge").notNull(),

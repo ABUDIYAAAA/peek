@@ -1,6 +1,9 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { oauthMetadataResponse } from "@modelcontextprotocol/server";
+import { createDb } from "@peek/db";
+import { pruneExpiredAuthRecords } from "@peek/auth";
+import { createLogger } from "@peek/core";
 import type { AppEnv } from "./types.js";
 import { requestIdMiddleware } from "./middleware/requestId.js";
 import { envMiddleware } from "./middleware/env.js";
@@ -90,7 +93,30 @@ v1Router.route("/machine-identities", machineIdentitiesRouter);
 
 app.route("/api/v1", v1Router);
 
-export default app;
+export default {
+  fetch: app.fetch,
+  async scheduled(
+    _event: ScheduledEvent,
+    env: AppEnv["Bindings"],
+    ctx: ExecutionContext,
+  ) {
+    if (!env?.DB) return;
+    const db = createDb(env.DB);
+    const logger = createLogger({ name: "cron-cleanup" });
+    ctx.waitUntil(
+      pruneExpiredAuthRecords(db)
+        .then((res) => {
+          logger.info("Pruned expired ephemeral auth records", { ...res });
+        })
+        .catch((err) => {
+          logger.error("Failed to prune expired auth records", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }),
+    );
+  },
+};
+
 export type AppType = typeof app;
 export * from "./types.js";
 export * from "./helpers/respond.js";

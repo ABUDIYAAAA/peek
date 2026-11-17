@@ -78,6 +78,212 @@ export interface RegisteredClientMetadata {
   token_endpoint_auth_method: string;
 }
 
+const FORBIDDEN_URI_SCHEMES = new Set([
+  "javascript:",
+  "data:",
+  "file:",
+  "blob:",
+  "about:",
+  "vbscript:",
+  "ws:",
+  "wss:",
+  "mailto:",
+  "tel:",
+  "sms:",
+  "ftp:",
+  "ftps:",
+  "intent:",
+]);
+
+const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "[::1]", "localhost"]);
+
+// Recognized native coding IDE & agent client URI schemes
+const WELL_KNOWN_NATIVE_SCHEMES = new Set([
+  "antigravity",
+  "cursor",
+  "vscode",
+  "vscode-insiders",
+  "windsurf",
+  "claude",
+  "zed",
+  "sublime",
+  "pycharm",
+  "idea",
+  "webstorm",
+]);
+
+/**
+ * Validates an OAuth 2.1 redirect URI per RFC 8252 (Native Apps) & RFC 6749 §3.1.2.
+ *
+ * Rules:
+ * 1. Must be a valid URI string, length between 1 and 2048 characters.
+ * 2. MUST NOT contain fragment identifiers (#).
+ * 3. Scheme MUST NOT be a dangerous pseudo-protocol (javascript:, data:, file:, etc.).
+ * 4. Allowed schemes:
+ *    - https: Remote secure web redirect.
+ *    - http: Allowed ONLY for loopback interfaces (127.0.0.1, [::1], localhost).
+ *    - Custom native scheme: Allowed if reverse domain notation (e.g. com.example.app)
+ *      or recognized native scheme (antigravity, cursor, etc.), conforming to RFC 3986 §3.1.
+ */
+export function validateRedirectUri(uri: string): void {
+  if (typeof uri !== "string" || !uri.trim()) {
+    throw new BadRequestError("redirect_uri must be a non-empty string");
+  }
+
+  const trimmed = uri.trim();
+  if (trimmed.length > 2048) {
+    throw new BadRequestError(
+      "redirect_uri exceeds maximum length of 2048 characters",
+    );
+  }
+
+  // RFC 6749 §3.1.2: The endpoint URI MUST NOT include a fragment component.
+  if (trimmed.includes("#")) {
+    throw new BadRequestError(
+      `redirect_uri must not contain a fragment identifier (#): ${trimmed}`,
+    );
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new BadRequestError(`Invalid redirect_uri format: ${trimmed}`);
+  }
+
+  const protocol = parsed.protocol.toLowerCase();
+
+  // Reject dangerous pseudo-protocols
+  if (FORBIDDEN_URI_SCHEMES.has(protocol)) {
+    throw new BadRequestError(
+      `Forbidden redirect_uri scheme "${protocol}": ${trimmed}`,
+    );
+  }
+
+  // Case 1: HTTPS (remote secure web)
+  if (protocol === "https:") {
+    if (!parsed.hostname || parsed.hostname.includes(" ")) {
+      throw new BadRequestError(`Invalid hostname in redirect_uri: ${trimmed}`);
+    }
+    return;
+  }
+
+  // Case 2: HTTP (loopback only per RFC 8252 §7.3)
+  if (protocol === "http:") {
+    const hostname = parsed.hostname.toLowerCase();
+    if (!LOOPBACK_HOSTNAMES.has(hostname)) {
+      throw new BadRequestError(
+        `Plain HTTP redirect_uri is only permitted on loopback interfaces (127.0.0.1, [::1], localhost). Received: ${trimmed}`,
+      );
+    }
+    return;
+  }
+
+  // Case 3: Private-use Custom Native Scheme (e.g. antigravity:, cursor:, com.google.antigravity:)
+  const schemeName = protocol.replace(/:$/, "");
+  // RFC 3986 §3.1 scheme syntax: ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
+  const isValidSchemeSyntax = /^[a-z][a-z0-9+.-]*$/.test(schemeName);
+  if (!isValidSchemeSyntax || schemeName.length < 2 || schemeName.length > 64) {
+    throw new BadRequestError(
+      `Invalid custom scheme "${schemeName}" in redirect_uri: ${trimmed}`,
+    );
+  }
+
+  const hasDot = schemeName.includes(".");
+  const isWellKnown = WELL_KNOWN_NATIVE_SCHEMES.has(schemeName);
+  const isAlphanumericNative = /^[a-z0-9-]{3,32}$/.test(schemeName);
+
+  if (!hasDot && !isWellKnown && !isAlphanumericNative) {
+    throw new BadRequestError(
+      `Unsupported custom scheme "${schemeName}" in redirect_uri: ${trimmed}. Custom schemes must follow reverse-DNS notation (e.g. com.company.app) or be a recognized native client scheme.`,
+    );
+  }
+}
+
+/**
+ * Validates a web URI (client_uri, logo_uri). Must be https: or loopback http:.
+ */
+export function validateWebUri(uri: string, fieldName: string): void {
+  if (typeof uri !== "string" || !uri.trim()) {
+    throw new BadRequestError(`${fieldName} must be a non-empty string`);
+  }
+
+  const trimmed = uri.trim();
+  if (trimmed.length > 2048) {
+    throw new BadRequestError(
+      `${fieldName} exceeds maximum length of 2048 characters`,
+    );
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new BadRequestError(`Invalid ${fieldName} format: ${trimmed}`);
+  }
+
+  const protocol = parsed.protocol.toLowerCase();
+  if (FORBIDDEN_URI_SCHEMES.has(protocol)) {
+    throw new BadRequestError(`Forbidden scheme "${protocol}" in ${fieldName}`);
+  }
+
+  if (
+    protocol !== "https:" &&
+    (protocol !== "http:" ||
+      !LOOPBACK_HOSTNAMES.has(parsed.hostname.toLowerCase()))
+  ) {
+    throw new BadRequestError(
+      `${fieldName} must use https: (or loopback http:). Received: ${trimmed}`,
+    );
+  }
+}
+
+/**
+ * Checks if a requested redirect_uri matches any registered redirect URI for the client.
+ * Implements RFC 8252 §7.3 loopback port variation rule:
+ * For loopback HTTP redirect URIs (127.0.0.1, [::1], localhost), any port is allowed
+ * as long as the scheme, loopback host, and pathname match.
+ */
+export function isRedirectUriAllowed(
+  requestedUri: string,
+  registeredUris: string[],
+): boolean {
+  // 1. Direct exact match
+  if (registeredUris.includes(requestedUri)) {
+    return true;
+  }
+
+  let requestedParsed: URL;
+  try {
+    requestedParsed = new URL(requestedUri);
+  } catch {
+    return false;
+  }
+
+  const requestedProto = requestedParsed.protocol.toLowerCase();
+  const requestedHost = requestedParsed.hostname.toLowerCase();
+
+  // 2. Loopback dynamic port matching (RFC 8252 §7.3)
+  if (requestedProto === "http:" && LOOPBACK_HOSTNAMES.has(requestedHost)) {
+    for (const regUri of registeredUris) {
+      try {
+        const regParsed = new URL(regUri);
+        if (
+          regParsed.protocol.toLowerCase() === "http:" &&
+          regParsed.hostname.toLowerCase() === requestedHost &&
+          regParsed.pathname === requestedParsed.pathname
+        ) {
+          return true;
+        }
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  return false;
+}
+
 /**
  * RFC 7591 Dynamic Client Registration for coding agents (e.g. Antigravity, Cursor).
  */
@@ -85,38 +291,86 @@ export async function registerOAuthClient(
   db: Database,
   input: RegisterClientInput,
 ): Promise<RegisteredClientMetadata> {
-  if (!input.client_name?.trim()) {
+  const clientName = input.client_name?.trim();
+  if (!clientName) {
     throw new BadRequestError("client_name is required");
+  }
+
+  if (clientName.length > 100) {
+    throw new BadRequestError("client_name must not exceed 100 characters");
   }
 
   if (!Array.isArray(input.redirect_uris) || input.redirect_uris.length === 0) {
     throw new BadRequestError("redirect_uris must be a non-empty array");
   }
 
+  if (input.redirect_uris.length > 10) {
+    throw new BadRequestError(
+      "redirect_uris must not contain more than 10 entries",
+    );
+  }
+
+  const validatedRedirectUris: string[] = [];
   for (const uri of input.redirect_uris) {
-    try {
-      new URL(uri);
-    } catch {
-      throw new BadRequestError(`Invalid redirect_uri: ${uri}`);
+    validateRedirectUri(uri);
+    validatedRedirectUris.push(uri.trim());
+  }
+
+  // Deduplicate
+  const uniqueRedirectUris = Array.from(new Set(validatedRedirectUris));
+
+  if (input.client_uri) {
+    validateWebUri(input.client_uri, "client_uri");
+  }
+
+  if (input.logo_uri) {
+    validateWebUri(input.logo_uri, "logo_uri");
+  }
+
+  // Validate grant_types
+  const allowedGrantTypes = new Set(["authorization_code", "refresh_token"]);
+  const grantTypes = input.grant_types?.length
+    ? input.grant_types
+    : ["authorization_code", "refresh_token"];
+
+  for (const gt of grantTypes) {
+    if (!allowedGrantTypes.has(gt)) {
+      throw new BadRequestError(
+        `Unsupported grant_type "${gt}". Only "authorization_code" and "refresh_token" are supported.`,
+      );
     }
+  }
+
+  // Validate response_types
+  const allowedResponseTypes = new Set(["code"]);
+  const responseTypes = input.response_types?.length
+    ? input.response_types
+    : ["code"];
+
+  for (const rt of responseTypes) {
+    if (!allowedResponseTypes.has(rt)) {
+      throw new BadRequestError(
+        `Unsupported response_type "${rt}". Only "code" is supported.`,
+      );
+    }
+  }
+
+  const tokenEndpointAuthMethod = input.token_endpoint_auth_method ?? "none";
+  if (tokenEndpointAuthMethod !== "none") {
+    throw new BadRequestError(
+      `Unsupported token_endpoint_auth_method "${tokenEndpointAuthMethod}". Only "none" is supported.`,
+    );
   }
 
   const clientId = `peek_client_${generateRandomHex(16)}`;
   const now = new Date();
-  const grantTypes = input.grant_types?.length
-    ? input.grant_types
-    : ["authorization_code", "refresh_token"];
-  const responseTypes = input.response_types?.length
-    ? input.response_types
-    : ["code"];
-  const tokenEndpointAuthMethod = input.token_endpoint_auth_method ?? "none";
 
   await db.insert(oauthClients).values({
     id: clientId,
-    clientName: input.client_name.trim(),
-    clientUri: input.client_uri ?? null,
-    logoUri: input.logo_uri ?? null,
-    redirectUris: JSON.stringify(input.redirect_uris),
+    clientName,
+    clientUri: input.client_uri?.trim() ?? null,
+    logoUri: input.logo_uri?.trim() ?? null,
+    redirectUris: JSON.stringify(uniqueRedirectUris),
     grantTypes: JSON.stringify(grantTypes),
     responseTypes: JSON.stringify(responseTypes),
     tokenEndpointAuthMethod,
@@ -126,10 +380,10 @@ export async function registerOAuthClient(
   return {
     client_id: clientId,
     client_id_issued_at: Math.floor(now.getTime() / 1000),
-    client_name: input.client_name.trim(),
-    client_uri: input.client_uri,
-    logo_uri: input.logo_uri,
-    redirect_uris: input.redirect_uris,
+    client_name: clientName,
+    client_uri: input.client_uri?.trim(),
+    logo_uri: input.logo_uri?.trim(),
+    redirect_uris: uniqueRedirectUris,
     grant_types: grantTypes,
     response_types: responseTypes,
     token_endpoint_auth_method: tokenEndpointAuthMethod,
@@ -186,8 +440,11 @@ export async function validateAuthorizeRequest(
     throw new BadRequestError("Missing redirect_uri parameter");
   }
 
+  // Validate redirect_uri format and scheme defense-in-depth
+  validateRedirectUri(query.redirect_uri);
+
   const allowedUris = JSON.parse(client.redirectUris) as string[];
-  if (!allowedUris.includes(query.redirect_uri)) {
+  if (!isRedirectUriAllowed(query.redirect_uri, allowedUris)) {
     throw new BadRequestError(
       "redirect_uri does not match any registered redirect URI for this client",
     );
@@ -320,24 +577,34 @@ export async function approveAuthorization(
   }
 
   const now = new Date();
-  const machineIdentityId = crypto.randomUUID();
   const identityName =
     input.identity_name?.trim() || validated.client.clientName;
 
-  await db.insert(machineIdentities).values({
-    id: machineIdentityId,
-    userId: input.userId,
-    clientId: validated.client.id,
-    name: identityName,
-    scopes: JSON.stringify(grantedScopes),
-    metadata: JSON.stringify({
-      clientName: validated.client.clientName,
-      authorizedAt: now.toISOString(),
-    }),
-    createdAt: now,
-    updatedAt: now,
+  // Check if active non-revoked identity already exists for this (userId, clientId)
+  const existingIdentity = await db.query.machineIdentities.findFirst({
+    where: and(
+      eq(machineIdentities.userId, input.userId),
+      eq(machineIdentities.clientId, validated.client.id),
+      isNull(machineIdentities.revokedAt),
+    ),
   });
 
+  // If existing identity exists, update its scopes and name if necessary
+  if (existingIdentity) {
+    await db
+      .update(machineIdentities)
+      .set({
+        name: identityName,
+        scopes: JSON.stringify(grantedScopes),
+        updatedAt: now,
+      })
+      .where(eq(machineIdentities.id, existingIdentity.id));
+  }
+
+  // Issue 10-minute PKCE auth code.
+  // CRITICAL (FINDING-04): Do NOT insert a brand new machine_identities row on consent approval!
+  // If the agent abandons authorization before exchanging the code, ZERO zombie identities are created.
+  // The identity is materialized upon exchangeAuthorizationCode when PKCE is proven.
   const rawCode = `peek_mac_${generateRandomHex(24)}`;
   const codeHash = await sha256Hex(rawCode);
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
@@ -346,7 +613,8 @@ export async function approveAuthorization(
     codeHash,
     clientId: validated.client.id,
     userId: input.userId,
-    machineIdentityId,
+    machineIdentityId: existingIdentity?.id ?? null,
+    identityName,
     redirectUri: validated.redirectUri,
     scopes: JSON.stringify(grantedScopes),
     codeChallenge: validated.codeChallenge,
@@ -364,7 +632,7 @@ export async function approveAuthorization(
   return {
     redirectUrl: targetUrl.toString(),
     approved: true,
-    machineIdentityId,
+    machineIdentityId: existingIdentity?.id,
   };
 }
 
@@ -492,18 +760,66 @@ export async function exchangeAuthorizationCode(
     throw new UnauthorizedError("Invalid PKCE code_verifier");
   }
 
-  const identity = await db.query.machineIdentities.findFirst({
-    where: eq(machineIdentities.id, authCode.machineIdentityId),
-  });
+  // Resolve or materialize Machine Identity upon successful code exchange (FINDING-04)
+  let targetIdentityId: string;
 
-  if (!identity || identity.revokedAt) {
-    throw new UnauthorizedError("Machine identity has been revoked");
+  if (authCode.machineIdentityId) {
+    const identity = await db.query.machineIdentities.findFirst({
+      where: eq(machineIdentities.id, authCode.machineIdentityId),
+    });
+
+    if (!identity || identity.revokedAt) {
+      throw new UnauthorizedError("Machine identity has been revoked");
+    }
+    targetIdentityId = identity.id;
+  } else {
+    // Check if an active identity was created for this user & client
+    let identity = await db.query.machineIdentities.findFirst({
+      where: and(
+        eq(machineIdentities.userId, authCode.userId),
+        eq(machineIdentities.clientId, authCode.clientId),
+        isNull(machineIdentities.revokedAt),
+      ),
+    });
+
+    if (!identity) {
+      const newIdentityId = crypto.randomUUID();
+      const [created] = await db
+        .insert(machineIdentities)
+        .values({
+          id: newIdentityId,
+          userId: authCode.userId,
+          clientId: authCode.clientId,
+          name: authCode.identityName || "Coding Agent",
+          scopes: authCode.scopes,
+          metadata: JSON.stringify({
+            clientName: authCode.clientId,
+            activatedAt: now.toISOString(),
+          }),
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning();
+
+      if (!created) {
+        throw new Error("Failed to materialize machine identity");
+      }
+      identity = created;
+    }
+
+    targetIdentityId = identity.id;
+
+    // Link identity back to authorization code record
+    await db
+      .update(oauthAuthCodes)
+      .set({ machineIdentityId: targetIdentityId })
+      .where(eq(oauthAuthCodes.codeHash, codeHash));
   }
 
   const scopes = JSON.parse(authCode.scopes) as McpScope[];
 
   return issueMachineTokenPair(db, env, {
-    machineIdentityId: authCode.machineIdentityId,
+    machineIdentityId: targetIdentityId,
     userId: authCode.userId,
     clientId: authCode.clientId,
     scopes,
@@ -619,33 +935,35 @@ export async function verifyMcpBearerToken(
   );
   const now = new Date();
 
-  const tokenRecord = await db.query.machineTokens.findFirst({
-    where: and(
-      eq(machineTokens.accessTokenHash, accessTokenHash),
-      isNull(machineTokens.revokedAt),
-      gt(machineTokens.accessTokenExpiresAt, now),
-    ),
-  });
+  // Single round-trip consolidated join query across tokens -> identities -> users (FINDING-06)
+  const rows = await db
+    .select({
+      tokenRecord: machineTokens,
+      machineIdentity: machineIdentities,
+      user: users,
+    })
+    .from(machineTokens)
+    .innerJoin(
+      machineIdentities,
+      eq(machineTokens.machineIdentityId, machineIdentities.id),
+    )
+    .innerJoin(users, eq(machineTokens.userId, users.id))
+    .where(
+      and(
+        eq(machineTokens.accessTokenHash, accessTokenHash),
+        isNull(machineTokens.revokedAt),
+        gt(machineTokens.accessTokenExpiresAt, now),
+        isNull(machineIdentities.revokedAt),
+      ),
+    )
+    .limit(1);
 
-  if (!tokenRecord) {
+  const first = rows[0];
+  if (!first) {
     throw new UnauthorizedError("Invalid, expired, or revoked MCP access token");
   }
 
-  const machineIdentity = await db.query.machineIdentities.findFirst({
-    where: eq(machineIdentities.id, tokenRecord.machineIdentityId),
-  });
-
-  if (!machineIdentity || machineIdentity.revokedAt) {
-    throw new UnauthorizedError("Machine identity has been revoked");
-  }
-
-  const user = await db.query.users.findFirst({
-    where: eq(users.id, tokenRecord.userId),
-  });
-
-  if (!user) {
-    throw new UnauthorizedError("Linked user account not found");
-  }
+  const { tokenRecord, machineIdentity, user } = first;
 
   // Record last used timestamp and IP asynchronously / best-effort
   await db

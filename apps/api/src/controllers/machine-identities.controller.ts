@@ -1,6 +1,5 @@
 import type { Context } from "hono";
 import {
-  getConnectConfig,
   listMachineIdentities,
   getMachineIdentityDetails,
   revokeMachineIdentity,
@@ -9,6 +8,7 @@ import {
   revertAllForMachineIdentity,
   defaultCompensationDispatcher,
 } from "@peek/auth";
+import { getConnectConfig } from "../helpers/connect-config.js";
 import type { AuditActionType, AuditStatus } from "@peek/db";
 import { UnauthorizedError } from "@peek/core";
 import type { AppEnv } from "../types.js";
